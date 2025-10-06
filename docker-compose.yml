@@ -1,0 +1,8 @@
+version: '3.8'
+
+services:
+  f1-model:
+    build: .
+    container_name: f1_model_runner
+    volumes:
+      - .:/app

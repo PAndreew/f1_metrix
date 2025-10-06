@@ -1,0 +1,6 @@
+/f1db.db
+/schema.txt
+/schema_extractor.py
+/venv
+
+*.nc
