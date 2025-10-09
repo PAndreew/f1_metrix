@@ -786,11 +786,48 @@ if __name__ == '__main__':
                     print(f"\n--- Top 5 Drivers in {year_to_show} (Pure Skill) ---\n", yearly_rankings_df[yearly_rankings_df['year'] == year_to_show].head(5)[['yearly_rank', 'forename', 'surname', 'yearly_pure_skill_score']])
             save_to_db(yearly_rankings_df, 'driver_yearly_pure_skill_rankings', db_engine_results)
         
-        u0_skill_intercept = trace.posterior['u_driver_params'].mean(dim=['chain', 'draw']).values[:, 0]
-        all_time_df = pd.DataFrame({'driverid': driver_ids, 'u0_skill_intercept': u0_skill_intercept})
-        all_time_df = pd.merge(all_time_df, drivers_df[['driverid', 'forename', 'surname']], on='driverid').sort_values(by='u0_skill_intercept', ascending=False)
-        print("\n--- Top 20 All-Time Driver Ranking (based on raw talent u0) ---\n", all_time_df[['forename', 'surname', 'u0_skill_intercept']].head(20))
-        save_to_db(all_time_df, 'driver_all_time_u0_ranking', db_engine_results)
+
+        print("\n--- Generating All-Time Driver Ranking (using Bayesian Uncertainty) ---")
+
+        # Get the u_driver_params DataArray from the trace
+        u_params_da = trace.posterior['u_driver_params']
+
+        # --- START OF FIX ---
+        # Use .isel() to select the first parameter (u0) along the correct dimension
+        # This is much more robust than NumPy slicing
+        u0_da = u_params_da.isel(u_driver_params_dim_1=0)
+
+        # Now, calculate the mean and quantile across the 'chain' and 'draw' dimensions
+        # This preserves the link to the driver dimension
+        u0_means = u0_da.mean(dim=("chain", "draw")).values
+        u0_lower_bounds = u0_da.quantile(0.10, dim=("chain", "draw")).values
+        # --- END OF FIX ---
+
+        # Now the lengths are guaranteed to match
+        # Create the dataframe
+        all_time_df = pd.DataFrame({
+            'driverid': driver_ids,
+            'u0_skill_mean': u0_means,
+            'u0_skill_lower_bound': u0_lower_bounds
+        })
+
+        # Merge driver names and sort by the CONSERVATIVE lower bound
+        all_time_df = pd.merge(all_time_df, drivers_df[['driverid', 'forename', 'surname']], on='driverid')
+        all_time_df = all_time_df.sort_values(by='u0_skill_lower_bound', ascending=False)
+
+        # Optional: Add the race count filter for even more robustness
+        MIN_RACES_THRESHOLD = 10
+        race_counts = prepared_data['driverid'].value_counts().reset_index()
+        race_counts.columns = ['driverid', 'race_count']
+        all_time_df = pd.merge(all_time_df, race_counts, on='driverid', how='left')
+        all_time_df_filtered = all_time_df[all_time_df['race_count'] >= MIN_RACES_THRESHOLD].copy()
+
+
+        print(f"\n--- Top 20 All-Time Driver Ranking (ranked by conservative lower bound, >={MIN_RACES_THRESHOLD} races) ---")
+        # Display both the mean and the lower bound to see the effect
+        print(all_time_df_filtered[['forename', 'surname', 'u0_skill_mean', 'u0_skill_lower_bound', 'race_count']].head(20))
+        # Let's save to a new table to compare
+        save_to_db(all_time_df_filtered, 'driver_all_time_u0_ranking_conservative', db_engine_results)
 
         print("\n--- Generating 2025 Head-to-Head Predictions ---")
         def parse_driver_name(slug):
